@@ -1,0 +1,6 @@
+/src/.vs/
+/src/bin/
+/src/packages/
+Debug/
+Release/
+obj/
