@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "HackerFramework": {
+      "commandName": "Project",
+      "nativeDebugging": true
+    }
+  }
+}

@@ -1,108 +1,208 @@
 ﻿using System;
+using System.ComponentModel;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+using HackerFramework.NativeObjects;
+using HackerFramework.ToolHelpInterface;
 
 using static HackerFramework.Native;
 
-namespace HackerFramework
-{
-    public static class Memory
-    {
-        public static uint Rebase(this Target target, uint addr, uint bAddr = 0) =>
-            target.ModuleStart + addr - bAddr;
+namespace HackerFramework;
 
-        public static uint Unbase(this Target target, uint addr, uint bAddr = 0) =>
-            addr -  target.ModuleStart + bAddr;
+/// <summary>
+///     Provides methods for reading and writing memory.
+/// </summary>
+public static class Memory {
+    /// <summary>
+    ///     Rebases the given RVA to a module.
+    /// </summary>
+    public static uint Rebase(RtModule module, uint rva, uint? baseRva = null) {
+        return module.Base + rva - (baseRva ?? 0);
+    }
 
-        /* Generic */
+    /// <summary>
+    ///     Debases the given RVA from a module. Vice versa with <see cref="Rebase" />.
+    /// </summary>
+    public static uint Debase(RtModule module, uint rva, uint? baseRva = null) {
+        return rva - module.Base + (baseRva ?? 0);
+    }
 
-        public static uint Allocate(this Target target, int size, MemoryProtection protect = MemoryProtection.ReadWriteExecute) =>
-            VirtualAllocEx(target.Handle, 0, size, AllocationType.Commit | AllocationType.Reserve, protect);
+    /// <summary>
+    ///     Get the module at the given address.
+    /// </summary>
+    public static RtModule ModuleAt(RtProc target, uint addr) {
+        var modules = ToolHelp.GetModules(new ModuleFilter { ProcId = target.Id });
+        return modules.FirstOrDefault(m => addr >= m.Base && addr < m.Base + m.Size);
+    }
 
-        public static bool Free(this Target target, uint addr) =>
-            VirtualFreeEx(target.Handle, addr, 0, AllocationType.Release);
+    /// <summary>
+    ///     Attempts to get a static address if it's relative to a module.
+    /// </summary>
+    public static string GetStaticAddress(RtProc target, uint addr) {
+        var module = ModuleAt(target, addr);
+        return module != null ? $"{module.Name}+0x{Debase(module, addr):X}" : null;
+    }
 
-        public static MemoryProtection Protect(this Target target, uint address, int size, MemoryProtection protection)
-        {
-            VirtualProtectEx(target.Handle, address, size, protection, out var old);
-            return old;
-        }
+    /// <summary>
+    ///     Allocates virtual memory in the given process.
+    /// </summary>
+    public static uint Allocate(RtProc proc, int size, MemSecurityFlags protect = MemSecurityFlags.ExecuteReadWrite) {
+        uint baseAddress = 0;
 
-        /* int8 */
+        if (NtAllocateVirtualMemory(proc.Handle, ref baseAddress, 0, size, MemAllocFlags.Commit | MemAllocFlags.Reserve,
+                protect) != NtSuccess)
+            throw new Win32Exception("Failed to allocate memory.");
 
-        public static byte[] ReadBytes(this Target target, uint addr, int size)
-        {
-            var buf = new byte[size];
-            ReadProcessMemory(target.Handle, addr, buf, size, out _);
-            return buf;
-        }
+        return baseAddress;
+    }
 
-        public static byte ReadByte(this Target target, uint addr) =>
-            ReadBytes(target, addr, 1)[0];
+    /// <summary>
+    ///     Releases virtual memory from the given process.
+    /// </summary>
+    public static bool Free(RtProc target, uint addr) {
+        return NtFreeVirtualMemory(target.Handle, addr, 0, MemAllocFlags.Release) == NtSuccess;
+    }
 
-        public static void WriteBytes(this Target target, uint addr, byte[] value) =>
-            WriteProcessMemory(target.Handle, addr, value, value.Length, out _);
+    /// <summary>
+    ///     Protects virtual memory at the given address.
+    /// </summary>
+    public static MemSecurityFlags Protect(RtProc target, uint addr, int size, MemSecurityFlags protect) {
+        if (NtProtectVirtualMemory(target.Handle, addr, size, protect, out var old) != NtSuccess)
+            throw new Win32Exception("Failed to protect memory.");
 
-        public static void WriteByte(this Target target, uint addr, byte value) =>
-            WriteBytes(target, addr, new[] { value });
+        return old;
+    }
 
-        /* int16 */
+    /* Generic r/w */
 
-        public static ushort ReadUShort(this Target target, uint addr) =>
-           BitConverter.ToUInt16(ReadBytes(target, addr, 2), 0);
+    public static byte[] ReadBytes(RtProc target, uint addr, int size) {
+        var buf = new byte[size];
 
-        public static short ReadShort(this Target target, uint addr) =>
-            BitConverter.ToInt16(ReadBytes(target, addr, 2), 0);
+        if (NtReadVirtualMemory(target.Handle, addr, buf, size, out var bytesRead) != NtSuccess || bytesRead != size)
+            throw new Win32Exception("Failed to read memory.");
 
-        public static void WriteUShort(this Target target, uint addr, ushort value) =>
-            WriteBytes(target, addr, BitConverter.GetBytes(value));
+        return buf;
+    }
 
-        public static void WriteShort(this Target target, uint addr, short value) =>
-            WriteBytes(target, addr, BitConverter.GetBytes(value));
+    public static void WriteBytes(RtProc target, uint addr, byte[] value) {
+        if (NtWriteVirtualMemory(target.Handle, addr, value, value.Length, out var bytesWritten) != NtSuccess ||
+            bytesWritten != value.Length)
+            throw new Win32Exception("Failed to write memory.");
+    }
 
-        /* int32 */
+    /// <summary>
+    ///     Reads an unmanaged value from the given address.
+    /// </summary>
+    public static T Read<T>(RtProc target, uint addr) where T : unmanaged {
+        var buf = new byte[Marshal.SizeOf<T>()];
 
-        public static uint ReadPointer(this Target target, uint addr) => // remember: x86 process
-           BitConverter.ToUInt32(ReadBytes(target, addr, 4), 0);
+        if (NtReadVirtualMemory(target.Handle, addr, buf, buf.Length, out var bytesRead) != NtSuccess ||
+            bytesRead != buf.Length)
+            throw new Win32Exception("Failed to read memory.");
 
-        public static uint ReadUInt(this Target target, uint addr) =>
-           BitConverter.ToUInt32(ReadBytes(target, addr, 4), 0);
+        return Unsafe.As<byte, T>(ref buf[0]);
+    }
 
-        public static int ReadInt(this Target target, uint addr) =>
-           BitConverter.ToInt32(ReadBytes(target, addr, 4), 0);
+    /// <summary>
+    ///     Writes an unmanaged value from the given address.
+    /// </summary>
+    public static void Write<T>(RtProc target, uint addr, T value) {
+        var buf = new byte[Marshal.SizeOf<T>()];
+        Unsafe.As<byte, T>(ref buf[0]) = value;
 
-        public static void WriteUInt(this Target target, uint addr, uint value) =>
-            WriteBytes(target, addr, BitConverter.GetBytes(value));
+        if (NtReadVirtualMemory(target.Handle, addr, buf, buf.Length, out var bytesRead) != NtSuccess ||
+            bytesRead != buf.Length)
+            throw new Win32Exception("Failed to read memory.");
+    }
 
-        public static void WriteInt(this Target target, uint addr, int value) =>
-            WriteBytes(target, addr, BitConverter.GetBytes(value));
+    /* int8 */
 
-        /* float */
+    public static byte ReadByte(RtProc target, uint addr) {
+        return ReadBytes(target, addr, 1)[0];
+    }
 
-        public static float ReadFloat(this Target target, uint addr) =>
-            BitConverter.ToSingle(ReadBytes(target, addr, 4), 0);
+    public static void WriteByte(RtProc target, uint addr, byte value) {
+        WriteBytes(target, addr, new[] { value });
+    }
 
-        public static void WriteFloat(this Target target, uint addr, float value) =>
-            WriteBytes(target, addr, BitConverter.GetBytes(value));
+    /* int16 */
 
-        /* int64 */
+    public static ushort ReadUShort(RtProc target, uint addr) {
+        return BitConverter.ToUInt16(ReadBytes(target, addr, 2), 0);
+    }
 
-        public static ulong ReadULong(this Target target, uint addr) =>
-          BitConverter.ToUInt64(ReadBytes(target, addr, 8), 0);
+    public static short ReadShort(RtProc target, uint addr) {
+        return BitConverter.ToInt16(ReadBytes(target, addr, 2), 0);
+    }
 
-        public static long ReadLong(this Target target, uint addr) =>
-           BitConverter.ToInt64(ReadBytes(target, addr, 8), 0);
-        
-        public static void WriteULong(this Target target, uint addr, long value) =>
-            WriteBytes(target, addr, BitConverter.GetBytes(value));
+    public static void WriteUShort(RtProc target, uint addr, ushort value) {
+        WriteBytes(target, addr, BitConverter.GetBytes(value));
+    }
 
-        public static void WriteLong(this Target target, uint addr, long value) =>
-            WriteBytes(target, addr, BitConverter.GetBytes(value));
+    public static void WriteShort(RtProc target, uint addr, short value) {
+        WriteBytes(target, addr, BitConverter.GetBytes(value));
+    }
 
-        /* double */
+    /* int32 */
 
-        public static double ReadDouble(this Target target, uint addr) =>
-            BitConverter.ToDouble(ReadBytes(target, addr, 8), 0);
+    public static uint ReadPointer(RtProc target, uint addr) {
+        // remember: x86 process
+        return BitConverter.ToUInt32(ReadBytes(target, addr, 4), 0);
+    }
 
-        public static void WriteDouble(this Target target, uint addr, double value) =>
-            WriteBytes(target, addr, BitConverter.GetBytes(value));
+    public static uint ReadUInt(RtProc target, uint addr) {
+        return BitConverter.ToUInt32(ReadBytes(target, addr, 4), 0);
+    }
+
+    public static int ReadInt(RtProc target, uint addr) {
+        return BitConverter.ToInt32(ReadBytes(target, addr, 4), 0);
+    }
+
+    public static void WriteUInt(RtProc target, uint addr, uint value) {
+        WriteBytes(target, addr, BitConverter.GetBytes(value));
+    }
+
+    public static void WriteInt(RtProc target, uint addr, int value) {
+        WriteBytes(target, addr, BitConverter.GetBytes(value));
+    }
+
+    /* float */
+
+    public static float ReadFloat(RtProc target, uint addr) {
+        return BitConverter.ToSingle(ReadBytes(target, addr, 4), 0);
+    }
+
+    public static void WriteFloat(RtProc target, uint addr, float value) {
+        WriteBytes(target, addr, BitConverter.GetBytes(value));
+    }
+
+    /* int64 */
+
+    public static ulong ReadULong(RtProc target, uint addr) {
+        return BitConverter.ToUInt64(ReadBytes(target, addr, 8), 0);
+    }
+
+    public static long ReadLong(RtProc target, uint addr) {
+        return BitConverter.ToInt64(ReadBytes(target, addr, 8), 0);
+    }
+
+    public static void WriteULong(RtProc target, uint addr, long value) {
+        WriteBytes(target, addr, BitConverter.GetBytes(value));
+    }
+
+    public static void WriteLong(RtProc target, uint addr, long value) {
+        WriteBytes(target, addr, BitConverter.GetBytes(value));
+    }
+
+    /* double */
+
+    public static double ReadDouble(RtProc target, uint addr) {
+        return BitConverter.ToDouble(ReadBytes(target, addr, 8), 0);
+    }
+
+    public static void WriteDouble(RtProc target, uint addr, double value) {
+        WriteBytes(target, addr, BitConverter.GetBytes(value));
     }
 }
