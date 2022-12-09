@@ -95,26 +95,32 @@ public static class Memory {
     /// <summary>
     ///     Reads an unmanaged value from the given address.
     /// </summary>
-    public static T Read<T>(RtProc target, uint addr) where T : unmanaged {
-        var buf = new byte[Marshal.SizeOf<T>()];
-
+    public static unsafe T Read<T>(RtProc target, uint addr) where T : unmanaged {
+        var size = Marshal.SizeOf<T>();
+        var buf = ReadBytes(target, addr, size);
+        
         if (NtReadVirtualMemory(target.Handle, addr, buf, buf.Length, out var bytesRead) != NtSuccess ||
             bytesRead != buf.Length)
             throw new Win32Exception("Failed to read memory.");
 
-        return Unsafe.As<byte, T>(ref buf[0]);
+        fixed (byte* bufPtr = buf) {
+            return Marshal.PtrToStructure<T>((IntPtr)bufPtr)!;
+        }
     }
 
     /// <summary>
     ///     Writes an unmanaged value from the given address.
     /// </summary>
-    public static void Write<T>(RtProc target, uint addr, T value) {
+    public static unsafe void Write<T>(RtProc target, uint addr, T value) {
         var buf = new byte[Marshal.SizeOf<T>()];
-        Unsafe.As<byte, T>(ref buf[0]) = value;
+        
+        fixed (byte* bufPtr = buf) {
+            Marshal.StructureToPtr(value, (IntPtr)bufPtr, false);
+        }
 
-        if (NtReadVirtualMemory(target.Handle, addr, buf, buf.Length, out var bytesRead) != NtSuccess ||
-            bytesRead != buf.Length)
-            throw new Win32Exception("Failed to read memory.");
+        if (NtWriteVirtualMemory(target.Handle, addr, buf, buf.Length, out var bytesWritten) != NtSuccess ||
+            bytesWritten != buf.Length)
+            throw new Win32Exception("Failed to write memory.");
     }
 
     /* int8 */

@@ -42,10 +42,10 @@ public struct Hde32Inst {
     public byte Size;
     public Hde32Seg SegOverride = new();
     public ushort Opcode;
-    public byte ModRm;
+    public byte Dst;
     public byte ModRmMod;
     public byte ModRmReg;
-    public byte ModRmRm;
+    public byte Src;
     public byte Sib;
     public byte SibScale;
     public byte SibIndex;
@@ -149,9 +149,9 @@ public class Hde32 {
         0xe7, 0x08, 0x00, 0xf0, 0x02, 0x00
     };
 
-    public static uint Disasm(byte[] code, out Hde32Inst hs) {
-        if (code.Length < 16)
-            Array.Resize(ref code, 16);
+    public static uint Disasm(byte[] code, int offset, out Hde32Inst hs) {
+        if (code.Length - offset < 16)
+            Array.Resize(ref code, offset + 16);
 
         var hde32Table = Hde32Table.AsSpan();
         hs = new Hde32Inst();
@@ -249,13 +249,13 @@ public class Hde32 {
 
         if ((cflags & CModrm) != 0) {
             hs.Flags |= HdeFlags.ModRm;
-            hs.ModRm = c = code[p++];
+            hs.Dst = c = code[p++];
 
             byte mMod;
             hs.ModRmMod = mMod = (byte)(c >> 6);
 
             byte mRm;
-            hs.ModRmRm = mRm = (byte)(c & 7);
+            hs.Src = mRm = (byte)(c & 7);
 
             byte mReg;
             hs.ModRmReg = mReg = (byte)((c & 0x3F) >> 3);

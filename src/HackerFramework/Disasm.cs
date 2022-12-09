@@ -7,8 +7,6 @@ using HackerFramework.Streams;
 
 namespace HackerFramework;
 
-// TODO: REWRITE USING HDE32
-
 /// <summary>
 ///     Provides methods for disassembly.
 /// </summary>
@@ -16,16 +14,12 @@ public static class Disasm {
     /// <summary>
     ///     Determines if the given address initializes a stack frame.
     /// </summary>
-    public static bool PrologueAt(RtProc target, uint addr) {
-        var bytes = Memory.ReadBytes(target, addr, 3);
-
-        if (bytes[2] != 0x8B) // Not a "mov r32, r32" instruction
+    public static bool IsPrologue(byte[] code) {
+        if (code[0] != 0x55) // push r16/32{ebp}
             return false;
 
-        return
-            (bytes[0] == 0x55 && bytes[2] == 0xEC) || // push ebp; mov ebp, esp
-            (bytes[0] == 0x53 && bytes[2] == 0xDC) || // push ebx; mov ebx, esp
-            (bytes[0] == 0x56 && bytes[2] == 0xF4); // push esi; mov esi, esp
+        Hde32.Disasm(code, 1, out var i2);
+        return i2.Opcode == 0x8B && i2.Dst == 5; // mov r16/32{ebp}, r16/32{esp}
     }
 
     /// <summary>
@@ -61,7 +55,7 @@ public static class Disasm {
     ///     Gets the prologue of the function at the given address.
     /// </summary>
     public static uint GetPrologue(RtProc target, uint addr) {
-        return PrologueAt(target, addr) ? addr : LastPrologue(target, addr);
+        return IsPrologue(target, addr) ? addr : LastPrologue(target, addr);
     }
 
     /// <summary>
@@ -75,13 +69,13 @@ public static class Disasm {
     ///     Gets the next prologue.
     /// </summary>
     public static uint NextPrologue(RtProc target, uint addr) {
-        if (PrologueAt(target, addr))
+        if (IsPrologue(target, addr))
             addr += 16;
 
         if (addr % 16 == 0)
             addr += 16 - addr % 16;
 
-        while (!PrologueAt(target, addr))
+        while (!IsPrologue(target, addr))
             addr += 16;
 
         return addr;
@@ -91,13 +85,13 @@ public static class Disasm {
     ///     Gets the last prologue.
     /// </summary>
     public static uint LastPrologue(RtProc target, uint addr) {
-        if (PrologueAt(target, addr))
+        if (IsPrologue(target, addr))
             addr -= 16;
 
         if (addr % 16 != 0)
             addr -= addr % 16;
 
-        while (!PrologueAt(target, addr))
+        while (!IsPrologue(target, addr))
             addr -= 16;
 
         return addr;
